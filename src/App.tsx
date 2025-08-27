@@ -1,13 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
-// The AIChatPage component is now imported from its new location
+
+// ✅ استيراد Supabase Auth بدلاً من تيليجرام
+import { supabase } from './integrations/supabase/client';
+
+// ✅ صفحة الدردشة بالذكاء الاصطناعي كما كانت
 import AIChatPage from './components/AIChatPage';
-// The BrainCircuit icon is now correctly imported
+
+// ✅ الأيقونات كما هي (بدون تغيير في المنطق)
 import { Plus, Edit, Trash2, Save, Eye, EyeOff, Send, BrainCircuit, Loader2, Book } from 'lucide-react';
 
-// Assume these imports and types are available from the user's project
-import { initTelegram, getTelegramUser, expandTelegramApp, setupUserInteractionExpand } from './utils/telegram';
+// ⛔️ إزالة استيراد تيليجرام نهائياً
+// import { initTelegram, getTelegramUser, expandTelegramApp, setupUserInteractionExpand } from './utils/telegram';
+
+// ✅ الإبقاء على نفس أسماء الدوال من supabase utils لكن سيتم تكييفها داخلياً للعمل مع Google Auth
 import {
-  createOrUpdateUser,
+  createOrUpdateUser, // الآن ستستقبل بيانات المستخدم من Supabase Auth بدلاً من Telegram (سنعدلها في الملف الثاني)
   updateUserPoints,
   updateUserTimeSpent,
   addNewSubscriptionTasks,
@@ -16,7 +23,11 @@ import {
   cleanupSessionTracking,
   handleMinutelySessionUpdate
 } from './utils/supabase';
+
+// ✅ نوع البيانات للمستخدم — سنبقيه كما هو اسمًا (UserData) للحفاظ على التوافق مع بقية الكود
+// ملاحظة: سنجعل الحقل id من نوع string (معرّف Supabase Auth)
 import { UserData } from './types/telegram';
+
 import BottomNavigation from './components/BottomNavigation';
 import HomePage from './components/HomePage';
 import TasksPage from './components/TasksPage';
@@ -27,25 +38,40 @@ import TimerPage from './components/TimerPage';
 import TDLPage from './components/TDLPage';
 import ChallengePage from './components/ChallengePage';
 import FocusTimerPage from './components/FocusTimerPage';
-// Remove AdminPanel import
 
+// ✅ صفحة تسجيل الدخول الجديدة (سنرسلها في ملف منفصل)
+import LoginPage from './components/LoginPage';
+
+// =============================================================
+//                    مكون التطبيق الرئيسي
+//            (تم تحويله للعمل بجوجل عبر Supabase)
+// =============================================================
 const App: React.FC = memo(() => {
-  // State to manage the active tab in the bottom navigation
+  // إدارة التبويب النشط
   const [activeTab, setActiveTab] = useState('home');
-  // State to hold the user's data from Supabase or local storage
+
+  // بيانات المستخدم من Supabase (بعد المزامنة مع جدول users)
   const [userData, setUserData] = useState<UserData | null>(null);
-  // State to manage the initial loading screen of the app
+
+  // حالة التحميل الأولي للتطبيق
   const [isLoading, setIsLoading] = useState(true);
-  // State to control the visibility of the focus timer page
+
+  // عرض/إخفاء مؤقّت التركيز
   const [showFocusTimer, setShowFocusTimer] = useState(false);
-  // State to control the visibility of the AI chat page
+
+  // عرض/إخفاء صفحة الدردشة بالذكاء الاصطناعي
   const [showAIChat, setShowAIChat] = useState(false);
-  // State to display loading messages during app initialization
+
+  // رسائل التحميل
   const [loadingMessage, setLoadingMessage] = useState('جاري التهيئة...');
-  // State to track and display the loading progress
+
+  // نسبة التقدم في التحميل
   const [loadingProgress, setLoadingProgress] = useState(0);
 
-  // useRef hooks for managing timers and session tracking without causing re-renders
+  // حالة التوثيق: هل المستخدم مسجل دخولاً عبر Google؟
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+
+  // مراجع المؤقتات وتتبع الجلسة
   const globalTimerRef = useRef<NodeJS.Timeout | null>(null);
   const minuteTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastPointsUpdateRef = useRef<number>(0);
@@ -53,95 +79,148 @@ const App: React.FC = memo(() => {
   const lastTimeUpdateRef = useRef<number>(Date.now());
   const sessionStartTimeRef = useRef<number>(Date.now());
   const isSessionInitialized = useRef<boolean>(false);
-  
-  // This useEffect hook is responsible for initializing the app, connecting to Telegram,
-  // fetching user data, and setting up initial timers. It runs only once on component mount.
+
+  // =============================================================
+  //                 التهيئة العامة للتطبيق + الجلسة
+  //     (استبدال منطق تيليجرام بمنطق Supabase Auth + Google)
+  // =============================================================
   useEffect(() => {
     const initializeApp = async () => {
       try {
-        setLoadingMessage('... جاري الاتصال بخوادم تيليجرام');
-        setLoadingProgress(20);
-        const tg = initTelegram();
-        setupUserInteractionExpand();
-        setTimeout(() => expandTelegramApp(), 1000);
+        setLoadingMessage('... جاري التحقق من جلسة تسجيل الدخول عبر جوجل');
+        setLoadingProgress(15);
 
+        // 1) الحصول على الجلسة الحالية من Supabase
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          console.error('Auth session error:', sessionError);
+        }
+
+        // 2) الاستماع لتغيّرات حالة المصادقة (تسجيل دخول/خروج)
+        supabase.auth.onAuthStateChange(async (_event, newSession) => {
+          setIsAuthenticated(!!newSession?.user);
+          if (newSession?.user) {
+            // عند تسجيل الدخول — قم بمزامنة المستخدم
+            await syncUserFromAuth(newSession.user);
+          } else {
+            // عند تسجيل الخروج
+            setUserData(null);
+            isSessionInitialized.current = false;
+          }
+        });
+
+        if (!session?.user) {
+          // لا يوجد مستخدم — عرض شاشة تسجيل الدخول
+          setIsAuthenticated(false);
+          setLoadingProgress(100);
+          setTimeout(() => setIsLoading(false), 300);
+          return;
+        }
+
+        setIsAuthenticated(true);
+
+        // 3) إعداد المهام (كما هو)
         setLoadingMessage('... جاري إعداد المهام اليومية');
-        setLoadingProgress(40);
+        setLoadingProgress(35);
         await addNewSubscriptionTasks();
 
+        // 4) مزامنة بيانات المستخدم مع قاعدة البيانات (users)
         setLoadingMessage('... جاري جلب بيانات حسابك');
         setLoadingProgress(60);
-        const telegramUser = getTelegramUser();
+        await syncUserFromAuth(session.user);
 
-        if (telegramUser) {
-          setLoadingMessage('... جاري مزامنة بيانات الخاصة بك');
-          setLoadingProgress(80);
-          const supabaseUserData = await createOrUpdateUser(telegramUser);
-          if (supabaseUserData) {
-            setUserData(supabaseUserData);
-            localStorage.setItem(
-              `userTime_${supabaseUserData.id}`,
-              supabaseUserData.timeSpent.toString()
-            );
-
-            // Initialize session tracking
-            sessionStartTimeRef.current = Date.now();
-            localStorage.setItem(`sessionStart_${supabaseUserData.id}`, sessionStartTimeRef.current.toString());
-
-            // Initialize the new session tracking system
-            await initializeSessionTracking(supabaseUserData.id);
-            isSessionInitialized.current = true;
-            console.log('Session tracking initialized for user:', supabaseUserData.id);
-
-          } else {
-            setLoadingMessage('... جاري استخدام البيانات المحلي');
-            const localUserData: UserData = {
-              id: telegramUser.id,
-              name: telegramUser.first_name + (telegramUser.last_name ? ` ${telegramUser.last_name}` : ''),
-              username: telegramUser.username,
-              photo_url: telegramUser.photo_url,
-              points: parseInt(localStorage.getItem(`points_${telegramUser.id}`) || '0'),
-              rank: parseInt(localStorage.getItem(`rank_${telegramUser.id}`) || '999'),
-              timeSpent: parseInt(localStorage.getItem(`userTime_${telegramUser.id}`) || '0')
-            };
-            setUserData(localUserData);
-            sessionStartTimeRef.current = Date.now();
-            localStorage.setItem(`sessionStart_${localUserData.id}`, sessionStartTimeRef.current.toString());
-
-            // Initialize session tracking for local user too
-            await initializeSessionTracking(localUserData.id);
-            isSessionInitialized.current = true;
-          }
-        } else {
-          setLoadingMessage('... جاري تحميل بيانات وضع المطور');
-          setUserData({
-            id: 123456789,
-            name: 'Askeladd Dev',
-            username: 'testuser',
-            points: 1250,
-            rank: 15,
-            timeSpent: 3600
-          });
-          sessionStartTimeRef.current = Date.now();
-        }
+        setLoadingProgress(100);
       } catch (error) {
         console.error('Error initializing app:', error);
-        setLoadingMessage('حدث خطأ أثناء تحميل');
+        setLoadingMessage('حدث خطأ أثناء التحميل');
       } finally {
-        setLoadingProgress(100);
         setTimeout(() => setIsLoading(false), 500);
+      }
+    };
+
+    // دالة مساعدة: مزامنة مستخدم Supabase Auth مع جدول users
+    const syncUserFromAuth = async (authUser: any) => {
+      try {
+        setLoadingMessage('... جاري مزامنة بياناتك مع قاعدة البيانات');
+        setLoadingProgress((p) => Math.max(p, 75));
+
+        // createOrUpdateUser الآن ستتعامل مع مستخدم Supabase مباشرة (سنعدلها في utils)
+        const supabaseUserData = await createOrUpdateUser({
+          id: authUser.id,
+          email: authUser.email,
+          name:
+            authUser.user_metadata?.full_name ||
+            authUser.user_metadata?.name ||
+            authUser.user_metadata?.user_name ||
+            authUser.email?.split('@')[0] ||
+            'مستخدم',
+          avatar_url: authUser.user_metadata?.avatar_url || undefined,
+        } as any);
+
+        if (supabaseUserData) {
+          // نتوقع أن يعود الشكل: { id: string, name, username?, photo_url?, points, rank, timeSpent }
+          setUserData(supabaseUserData);
+
+          // تخزين الوقت محلياً لكل مستخدم
+          localStorage.setItem(
+            `userTime_${supabaseUserData.id}`,
+            (supabaseUserData.timeSpent || 0).toString()
+          );
+
+          // تهيئة تتبع الجلسة
+          sessionStartTimeRef.current = Date.now();
+          localStorage.setItem(
+            `sessionStart_${supabaseUserData.id}`,
+            sessionStartTimeRef.current.toString()
+          );
+
+          // بدء نظام تتبع الجلسة الجديد
+          await initializeSessionTracking(supabaseUserData.id);
+          isSessionInitialized.current = true;
+          console.log('Session tracking initialized for user:', supabaseUserData.id);
+        } else {
+          // في حال تعذر التزامن لأي سبب — استخدام بيانات محلية افتراضية
+          const fallbackId = authUser.id as string;
+          const localUserData: UserData = {
+            id: fallbackId as unknown as any,
+            name:
+              authUser.user_metadata?.full_name ||
+              authUser.email?.split('@')[0] ||
+              'مستخدم',
+            username: undefined,
+            photo_url: authUser.user_metadata?.avatar_url || undefined,
+            points: parseInt(localStorage.getItem(`points_${fallbackId}`) || '0'),
+            rank: parseInt(localStorage.getItem(`rank_${fallbackId}`) || '999'),
+            timeSpent: parseInt(localStorage.getItem(`userTime_${fallbackId}`) || '0'),
+          } as any;
+
+          setUserData(localUserData);
+
+          sessionStartTimeRef.current = Date.now();
+          localStorage.setItem(
+            `sessionStart_${localUserData.id}`,
+            sessionStartTimeRef.current.toString()
+          );
+
+          await initializeSessionTracking(localUserData.id as any);
+          isSessionInitialized.current = true;
+        }
+      } catch (e) {
+        console.error('syncUserFromAuth error:', e);
       }
     };
 
     initializeApp();
   }, []);
 
-  // This hook manages the session timers and data saving to the database.
+  // =============================================================
+  //        إدارة المؤقتات وتخزين الوقت والنقاط كما كانت
+  // =============================================================
   useEffect(() => {
     if (!userData || !isSessionInitialized.current) return;
 
     const startGlobalTimer = () => {
-      // Clear existing timers to prevent duplicates
+      // تنظيف المؤقتات القديمة
       if (globalTimerRef.current) {
         clearInterval(globalTimerRef.current);
         globalTimerRef.current = null;
@@ -151,23 +230,25 @@ const App: React.FC = memo(() => {
         minuteTimerRef.current = null;
       }
 
-      let currentTime = userData.timeSpent || parseInt(localStorage.getItem(`userTime_${userData.id}`) || '0');
+      let currentTime =
+        userData.timeSpent ||
+        parseInt(localStorage.getItem(`userTime_${userData.id}`) || '0');
 
-      // Main timer - updates every second
+      // مؤقت رئيسي — كل ثانية
       globalTimerRef.current = setInterval(async () => {
         currentTime++;
 
-        // Update UI
-        setUserData(prev => prev ? { ...prev, timeSpent: currentTime } : null);
+        // تحديث الواجهة
+        setUserData((prev) => (prev ? { ...prev, timeSpent: currentTime } : null));
 
-        // Save locally
+        // حفظ محلي
         localStorage.setItem(`userTime_${userData.id}`, currentTime.toString());
 
-        // Add points every 10 seconds
+        // إضافة نقاط كل 10 ثوان
         if (currentTime > lastPointsUpdateRef.current && currentTime % 10 === 0) {
           lastPointsUpdateRef.current = currentTime;
           const pointsToAdd = 1;
-          setUserData(prev => prev ? { ...prev, points: (prev.points || 0) + pointsToAdd } : null);
+          setUserData((prev) => (prev ? { ...prev, points: (prev.points || 0) + pointsToAdd } : null));
 
           if (pointsUpdateTimeoutRef.current) {
             clearTimeout(pointsUpdateTimeoutRef.current);
@@ -175,19 +256,24 @@ const App: React.FC = memo(() => {
 
           pointsUpdateTimeoutRef.current = setTimeout(async () => {
             try {
-              await updateUserPoints(userData.id, pointsToAdd);
-              const currentPoints = parseInt(localStorage.getItem(`points_${userData.id}`) || '0');
-              localStorage.setItem(`points_${userData.id}`, (currentPoints + pointsToAdd).toString());
+              await updateUserPoints(String(userData.id), pointsToAdd);
+              const currentPoints = parseInt(
+                localStorage.getItem(`points_${userData.id}`) || '0'
+              );
+              localStorage.setItem(
+                `points_${userData.id}`,
+                (currentPoints + pointsToAdd).toString()
+              );
             } catch (error) {
               console.error('Error updating points in Supabase:', error);
             }
           }, 500);
         }
 
-        // Update total time in Supabase every minute
+        // تحديث الوقت الكلي في Supabase كل دقيقة
         if (Date.now() - lastTimeUpdateRef.current >= 60000) {
           try {
-            await updateUserTimeSpent(userData.id, currentTime);
+            await updateUserTimeSpent(String(userData.id), currentTime);
             lastTimeUpdateRef.current = Date.now();
             console.log('Total time updated in users table:', currentTime, 'seconds');
           } catch (error) {
@@ -196,32 +282,41 @@ const App: React.FC = memo(() => {
         }
       }, 1000);
 
-      // Separate timer for minute-based database saves
+      // مؤقت منفصل لحفظ بيانات الدقيقة
       minuteTimerRef.current = setInterval(async () => {
         try {
-          await handleMinutelySessionUpdate(userData.id);
+          await handleMinutelySessionUpdate(String(userData.id));
 
-          const currentTotalTime = parseInt(localStorage.getItem(`userTime_${userData.id}`) || '0');
-          await updateUserTimeSpent(userData.id, currentTotalTime);
+          const currentTotalTime = parseInt(
+            localStorage.getItem(`userTime_${userData.id}`) || '0'
+          );
+          await updateUserTimeSpent(String(userData.id), currentTotalTime);
 
-          console.log('Minute-based session time saved for user:', userData.id, 'Total time:', currentTotalTime);
+          console.log(
+            'Minute-based session time saved for user:',
+            userData.id,
+            'Total time:',
+            currentTotalTime
+          );
         } catch (error) {
           console.error('Error in minute-based session update:', error);
         }
-      }, 60000); // 60 seconds
+      }, 60000); // 60 ثانية
 
       console.log('Timers started for user:', userData.id);
     };
 
     const handleVisibilityChange = async () => {
       if (document.hidden) {
-        // App is going to background - save current session time
+        // التطبيق بالخلفية — حفظ الوقت الحالي
         try {
           if (isSessionInitialized.current) {
-            await handleMinutelySessionUpdate(userData.id);
+            await handleMinutelySessionUpdate(String(userData.id));
 
-            const currentTotalTime = parseInt(localStorage.getItem(`userTime_${userData.id}`) || '0');
-            await updateUserTimeSpent(userData.id, currentTotalTime);
+            const currentTotalTime = parseInt(
+              localStorage.getItem(`userTime_${userData.id}`) || '0'
+            );
+            await updateUserTimeSpent(String(userData.id), currentTotalTime);
 
             console.log('Session time saved on visibility change (hidden)');
           }
@@ -229,7 +324,7 @@ const App: React.FC = memo(() => {
           console.error('Error saving session time on visibility change:', error);
         }
 
-        // Clear all timers
+        // إيقاف المؤقتات
         if (globalTimerRef.current) {
           clearInterval(globalTimerRef.current);
           globalTimerRef.current = null;
@@ -243,7 +338,7 @@ const App: React.FC = memo(() => {
           pointsUpdateTimeoutRef.current = null;
         }
       } else {
-        // App is back to foreground - restart timers
+        // العودة للمقدمة — إعادة تشغيل المؤقتات
         startGlobalTimer();
         console.log('Timers restarted on visibility change (visible)');
       }
@@ -252,10 +347,12 @@ const App: React.FC = memo(() => {
     const handleBeforeUnload = async () => {
       if (userData?.id && isSessionInitialized.current) {
         try {
-          await handleMinutelySessionUpdate(userData.id);
-          const currentTotalTime = parseInt(localStorage.getItem(`userTime_${userData.id}`) || '0');
-          await updateUserTimeSpent(userData.id, currentTotalTime);
-          await cleanupSessionTracking(userData.id);
+          await handleMinutelySessionUpdate(String(userData.id));
+          const currentTotalTime = parseInt(
+            localStorage.getItem(`userTime_${userData.id}`) || '0'
+          );
+          await updateUserTimeSpent(String(userData.id), currentTotalTime);
+          await cleanupSessionTracking(String(userData.id));
           console.log('Session cleaned up on app close');
         } catch (error) {
           console.error('Error cleaning up session on app close:', error);
@@ -269,7 +366,7 @@ const App: React.FC = memo(() => {
         const data = JSON.stringify({
           userId: userData.id,
           timestamp: Date.now(),
-          action: 'save_and_cleanup'
+          action: 'save_and_cleanup',
         });
 
         if (navigator.sendBeacon) {
@@ -289,10 +386,12 @@ const App: React.FC = memo(() => {
       if (userData?.id && isSessionInitialized.current) {
         const finalCleanup = async () => {
           try {
-            await handleMinutelySessionUpdate(userData.id);
-            const currentTotalTime = parseInt(localStorage.getItem(`userTime_${userData.id}`) || '0');
-            await updateUserTimeSpent(userData.id, currentTotalTime);
-            await cleanupSessionTracking(userData.id);
+            await handleMinutelySessionUpdate(String(userData.id));
+            const currentTotalTime = parseInt(
+              localStorage.getItem(`userTime_${userData.id}`) || '0'
+            );
+            await updateUserTimeSpent(String(userData.id), currentTotalTime);
+            await cleanupSessionTracking(String(userData.id));
             console.log('Final cleanup completed on component unmount');
           } catch (error) {
             console.error('Error in final cleanup:', error);
@@ -317,18 +416,17 @@ const App: React.FC = memo(() => {
     };
   }, [userData?.id, isSessionInitialized.current]);
 
-  // Handle tab changes and update session tracking for groups
+  // =============================================================
+  //  حفظ موضع الصفحة + تحديث مجموعات الجلسة عند الانتقال للتحدي
+  // =============================================================
   useEffect(() => {
-    // -- بداية التعديل --
-    // هذا هو السطر الذي يحل المشكلة
-    // سيتم تنفيذه في كل مرة يتغير فيها activeTab
+    // حل مشكلة التمرير — كل تغيير تبويب يرجع للأعلى
     window.scrollTo(0, 0);
-    // -- نهاية التعديل --
 
     if (userData?.id && isSessionInitialized.current && activeTab === 'challenge') {
       setTimeout(async () => {
         try {
-          await updateSessionGroups(userData.id);
+          await updateSessionGroups(String(userData.id));
           console.log('Session groups updated after tab change to challenge');
         } catch (error) {
           console.error('Error updating session groups:', error);
@@ -337,49 +435,67 @@ const App: React.FC = memo(() => {
     }
   }, [activeTab, userData?.id]);
 
-  // Callback function to handle points updates
-  const handlePointsUpdate = useCallback(async (points: number) => {
-    if (!userData) return;
-    const newPoints = (userData.points || 0) + points;
-    setUserData({ ...userData, points: newPoints });
+  // =============================================================
+  //                ردود نداء للنقاط والوقت (كما هي)
+  // =============================================================
+  const handlePointsUpdate = useCallback(
+    async (points: number) => {
+      if (!userData) return;
+      const newPoints = (userData.points || 0) + points;
+      setUserData({ ...userData, points: newPoints });
 
-    if (pointsUpdateTimeoutRef.current) {
-      clearTimeout(pointsUpdateTimeoutRef.current);
-    }
-
-    pointsUpdateTimeoutRef.current = setTimeout(async () => {
-      try {
-        await updateUserPoints(userData.id, points);
-      } catch (error) {
-        console.error('Error updating points in Supabase:', error);
+      if (pointsUpdateTimeoutRef.current) {
+        clearTimeout(pointsUpdateTimeoutRef.current);
       }
-      localStorage.setItem(`points_${userData.id}`, newPoints.toString());
-    }, 500);
-  }, [userData]);
 
-  // Callback function to handle time updates
-  const handleTimeUpdate = useCallback((seconds: number) => {
-    if (userData) {
-      setUserData(prev => prev ? { ...prev, timeSpent: seconds } : null);
-    }
-  }, [userData]);
+      pointsUpdateTimeoutRef.current = setTimeout(async () => {
+        try {
+          await updateUserPoints(String(userData.id), points);
+        } catch (error) {
+          console.error('Error updating points in Supabase:', error);
+        }
+        localStorage.setItem(`points_${userData.id}`, newPoints.toString());
+      }, 500);
+    },
+    [userData]
+  );
 
-  // Force session save when user navigates to challenge page
-  const handleTabChange = useCallback(async (tab: string) => {
-    setActiveTab(tab);
-
-    if ((tab === 'challenge' || activeTab === 'challenge') && userData?.id && isSessionInitialized.current) {
-      try {
-        await handleMinutelySessionUpdate(userData.id);
-        await updateSessionGroups(userData.id);
-        console.log('Session updated for challenge page navigation');
-      } catch (error) {
-        console.error('Error updating session for challenge navigation:', error);
+  const handleTimeUpdate = useCallback(
+    (seconds: number) => {
+      if (userData) {
+        setUserData((prev) => (prev ? { ...prev, timeSpent: seconds } : null));
       }
-    }
-  }, [activeTab, userData?.id, isSessionInitialized.current]);
+    },
+    [userData]
+  );
 
-  // Display a loading screen while the app is initializing
+  // =============================================================
+  //                    تغيير التبويب + حفظ الجلسة
+  // =============================================================
+  const handleTabChange = useCallback(
+    async (tab: string) => {
+      setActiveTab(tab);
+
+      if (
+        (tab === 'challenge' || activeTab === 'challenge') &&
+        userData?.id &&
+        isSessionInitialized.current
+      ) {
+        try {
+          await handleMinutelySessionUpdate(String(userData.id));
+          await updateSessionGroups(String(userData.id));
+          console.log('Session updated for challenge page navigation');
+        } catch (error) {
+          console.error('Error updating session for challenge navigation:', error);
+        }
+      }
+    },
+    [activeTab, userData?.id, isSessionInitialized.current]
+  );
+
+  // =============================================================
+  //                      شاشات التحميل/الدخول
+  // =============================================================
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-100 via-indigo-100 to-purple-100 flex flex-col items-center justify-center p-6 text-center animate-fade-in">
@@ -402,32 +518,73 @@ const App: React.FC = memo(() => {
     );
   }
 
-  // If the AI chat page is active, render it and nothing else.
-  // The 'onClose' prop allows the chat page to return to the main app view.
+  // إن لم يكن المستخدم مسجلاً — نعرض صفحة تسجيل الدخول الجديدة (زر Google فقط)
+  if (!isAuthenticated || !userData) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-100" dir="rtl">
+        <LoginPage />
+      </div>
+    );
+  }
+
+  // عند تفعيل صفحة دردشة الذكاء الاصطناعي — نعرضها فقط
   if (showAIChat) {
     return <AIChatPage onClose={() => setShowAIChat(false)} />;
   }
 
-  // A function to render the currently active tab component
+  // =============================================================
+  //                 عرض التبويب النشط كما كان سابقًا
+  // =============================================================
   const renderActiveTab = () => {
-    // Pass the onClose prop to the FocusTimerPage
     if (showFocusTimer) return <FocusTimerPage onClose={() => setShowFocusTimer(false)} />;
 
     switch (activeTab) {
-      case 'home': return <HomePage userData={userData} onPointsUpdate={handlePointsUpdate} onTabChange={handleTabChange} />;
-      case 'tasks': return <TasksPage onPointsUpdate={handlePointsUpdate} userData={userData} />;
-      case 'ranking': return <RankingPage currentUser={userData} onTabChange={handleTabChange} />;
-      case 'bac': return <BacPage userData={userData} />;
-      case 'timer': return <TimerPage onPointsUpdate={handlePointsUpdate} onTimeUpdate={handleTimeUpdate} userData={userData} />;
-      case 'tdl': return <TDLPage userData={userData} onShowFocusTimer={() => setShowFocusTimer(true)} />;
-      case 'challenge': return <ChallengePage currentUser={userData} />;
-      default: return <HomePage userData={userData} onPointsUpdate={handlePointsUpdate} onTabChange={handleTabChange} />;
+      case 'home':
+        return (
+          <HomePage
+            userData={userData}
+            onPointsUpdate={handlePointsUpdate}
+            onTabChange={handleTabChange}
+          />
+        );
+      case 'tasks':
+        return <TasksPage onPointsUpdate={handlePointsUpdate} userData={userData} />;
+      case 'ranking':
+        return <RankingPage currentUser={userData} onTabChange={handleTabChange} />;
+      case 'bac':
+        return <BacPage userData={userData} />;
+      case 'timer':
+        return (
+          <TimerPage
+            onPointsUpdate={handlePointsUpdate}
+            onTimeUpdate={handleTimeUpdate}
+            userData={userData}
+          />
+        );
+      case 'tdl':
+        return <TDLPage userData={userData} onShowFocusTimer={() => setShowFocusTimer(true)} />;
+      case 'challenge':
+        return <ChallengePage currentUser={userData} />;
+      default:
+        return (
+          <HomePage
+            userData={userData}
+            onPointsUpdate={handlePointsUpdate}
+            onTabChange={handleTabChange}
+          />
+        );
     }
   };
 
-  // Determine if the AI chat button should be visible based on the current view
-  const isAIChatButtonVisible = ['home', 'ranking', 'tasks', 'bac', 'tdl'].includes(activeTab) && !showFocusTimer && !showAIChat;
+  // إظهار زر الذكاء الاصطناعي في الصفحات المحددة فقط
+  const isAIChatButtonVisible =
+    ['home', 'ranking', 'tasks', 'bac', 'tdl'].includes(activeTab) &&
+    !showFocusTimer &&
+    !showAIChat;
 
+  // =============================================================
+  //                          الواجهة
+  // =============================================================
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-100" dir="rtl">
       {isAIChatButtonVisible && (
@@ -440,9 +597,8 @@ const App: React.FC = memo(() => {
         </button>
       )}
 
-      {/* Conditional rendering of main content and BottomNavigation */}
+      {/* العرض الرئيسي + شريط التنقل السفلي */}
       {showFocusTimer ? (
-        // The FocusTimerPage takes the full screen and does not need a bottom bar
         renderActiveTab()
       ) : (
         <>
