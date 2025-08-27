@@ -2,15 +2,23 @@ import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
 import './index.css'
 import { Toaster } from '@/components/ui/toaster'
-import { AuthProvider } from './context/AuthContext.tsx' // <--- إضافة هذا السطر
+import { AuthProvider } from './context/AuthContext.tsx'
 
-createRoot(document.getElementById("root")!).render(
+// The root element of the application
+const rootElement = document.getElementById("root");
+
+if (!rootElement) {
+  throw new Error("Failed to find the root element");
+}
+
+const root = createRoot(rootElement);
+
+// Render the application, wrapped with the AuthProvider
+root.render(
   <>
-    {/* <--- إضافة هذا السطر */}
     <AuthProvider>
       <App />
       <Toaster />
     </AuthProvider>
-    {/* <--- إضافة هذا السطر */}
   </>
 );
