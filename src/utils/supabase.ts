@@ -1,14 +1,8 @@
 import { supabase } from '../integrations/supabase/client';
-// ✅ تكييف الأنواع للاعتماد على معرف Supabase (UUID) بدلاً من تيليجرام
-// ملاحظة: نبقي أسماء الدوال كما هي للحفاظ على التوافق مع بقية المشروع
-
-// إزالة TelegramUser
-// import { TelegramUser, UserData, Task } from '../types/telegram';
 import { UserData, Task } from '../types/telegram';
 
-// تعريف مبسط لبيانات مستخدم قادمة من Supabase Auth
 type AuthProfile = {
-  id: string; // Supabase Auth user id (UUID)
+  id: string;
   email?: string | null;
   name?: string | null;
   avatar_url?: string | null;
@@ -32,7 +26,6 @@ interface SessionData {
 
 const activeSessions = new Map<string, SessionData>();
 
-// Helper function to safely extract display name
 const getDisplayName = (p?: Pick<AuthProfile, 'name' | 'email' | 'username'>) => {
   if (!p) return 'مستخدم';
   return (
@@ -40,31 +33,27 @@ const getDisplayName = (p?: Pick<AuthProfile, 'name' | 'email' | 'username'>) =>
   );
 };
 
-// Helper function to get user completed tasks count
 export async function getUserCompletedTasksCount(userId: string): Promise<number> {
   try {
-    // أولاً نحاول عبر RPC جديد يدعم user_id كنص
     const { data: rpc1, error: rpc1Err } = await supabase.rpc(
       'get_user_completed_tasks_count_by_user_id',
       { p_user_id: userId }
     );
     if (!rpc1Err) return rpc1 || 0;
 
-    // رجوع لـ RPC القديم إن وُجد (قد يكون تم تحديثه داخلياً)
     const { data, error } = await supabase.rpc(
       'get_user_completed_tasks_count',
-      { p_user_id: userId }
+      { p_user_id: parseInt(userId) }
     );
     if (error) throw error;
     return data || 0;
   } catch (error) {
     console.error('Error getting user completed tasks count:', error);
-    // محاولة احتياطية عبر query
     try {
       const { count } = await supabase
         .from('user_tasks')
         .select('*', { count: 'exact', head: true })
-        .eq('user_id', userId);
+        .eq('user_id', parseInt(userId));
       return count || 0;
     } catch (e) {
       console.error('Fallback count error:', e);
@@ -73,29 +62,26 @@ export async function getUserCompletedTasksCount(userId: string): Promise<number
   }
 }
 
-// =============================
-//  إنشاء/تحديث المستخدم في جدول users
-// =============================
 export const createOrUpdateUser = async (
   profile: AuthProfile
 ): Promise<UserData | null> => {
   try {
-    // 1) محاولة جلب المستخدم الحالي (حسب id الجديد)
+    // Convert Supabase Auth user ID to a numeric telegram_id for compatibility
+    const numericId = parseInt(profile.id.replace(/\D/g, '').slice(-10)) || Math.floor(Math.random() * 1000000000);
+    
     const { data: existingUser, error: selError } = await supabase
       .from('users')
       .select('*')
-      .eq('id', profile.id)
+      .eq('telegram_id', numericId)
       .maybeSingle();
 
     if (selError && selError.code !== 'PGRST116') {
-      // PGRST116 = RowNotFound; يمكن تجاهلها
       console.warn('Select user warning:', selError.message);
     }
 
     const baseName = getDisplayName({ name: profile.name, email: profile.email, username: profile.username });
 
     if (existingUser) {
-      // 2) تحديث مستخدم موجود
       const { data, error } = await supabase
         .from('users')
         .update({
@@ -105,17 +91,16 @@ export const createOrUpdateUser = async (
           email: profile.email || null,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', profile.id)
+        .eq('telegram_id', numericId)
         .select()
         .single();
 
       if (error) throw error;
 
-      // جلب ترتيب المستخدم عبر RPC جديد أو إيجاد بديل
-      const rank = await getUserRankById(profile.id, data?.points ?? 0);
+      const rank = await getUserRankById(numericId, data?.points ?? 0);
 
       return {
-        id: data.id,
+        id: data.telegram_id,
         name: data.name,
         username: data.username || undefined,
         photo_url: data.photo_url || undefined,
@@ -124,11 +109,10 @@ export const createOrUpdateUser = async (
         timeSpent: data.time_spent,
       } as UserData;
     } else {
-      // 3) إنشاء مستخدم جديد
       const { data, error } = await supabase
         .from('users')
         .insert({
-          id: profile.id,
+          telegram_id: numericId,
           name: baseName,
           username: profile.username || null,
           photo_url: profile.avatar_url || null,
@@ -140,7 +124,7 @@ export const createOrUpdateUser = async (
       if (error) throw error;
 
       return {
-        id: data.id,
+        id: data.telegram_id,
         name: data.name,
         username: data.username || undefined,
         photo_url: data.photo_url || undefined,
@@ -155,20 +139,17 @@ export const createOrUpdateUser = async (
   }
 };
 
-// جلب ترتيب المستخدم حسب user_id
-const getUserRankById = async (userId: string, currentPoints: number): Promise<number | null> => {
+const getUserRankById = async (telegramId: number, currentPoints: number): Promise<number | null> => {
   try {
-    // محاولة عبر RPC حديث
     const { data: rpcRank, error: rpcErr } = await supabase.rpc(
-      'get_user_ranking_by_user_id',
-      { p_user_id: userId }
+      'get_user_ranking',
+      { p_telegram_id: telegramId }
     );
     if (!rpcErr && typeof rpcRank === 'number') return rpcRank;
   } catch (e) {
-    // نتجاهل الخطأ ونستخدم طريقة بديلة
+    console.error('RPC ranking error:', e);
   }
   try {
-    // بديل سريع: عدد المستخدمين الذين نقاطهم > نقاط المستخدم + 1
     const { count, error } = await supabase
       .from('users')
       .select('*', { count: 'exact', head: true })
@@ -181,15 +162,13 @@ const getUserRankById = async (userId: string, currentPoints: number): Promise<n
   }
 };
 
-// =============================
-//  تحديث نقاط المستخدم (مفلترة)
-// =============================
 export const updateUserPoints = async (
   userId: string,
   points: number
 ): Promise<void> => {
   try {
-    // Clear existing timeout for this user
+    const numericUserId = parseInt(userId);
+    
     if (updateTimeouts.has(userId)) {
       clearTimeout(updateTimeouts.get(userId)!);
     }
@@ -197,23 +176,21 @@ export const updateUserPoints = async (
     // Set new timeout for debounced update
     const timeout = setTimeout(async () => {
       try {
-        // أولوية لـ RPC آمن للسباقات
-        const { error: rpcErr } = await supabase.rpc('update_user_points_by_user_id', {
-          p_user_id: userId,
+        const { error: rpcErr } = await supabase.rpc('update_user_points', {
+          p_telegram_id: numericUserId,
           p_points_to_add: points,
         });
         if (rpcErr) {
-          // بديل: جلب النقاط الحالية ثم تحديثها (قد لا يكون مثالياً للسباقات)
           const { data: userRow } = await supabase
             .from('users')
             .select('points')
-            .eq('id', userId)
+            .eq('telegram_id', numericUserId)
             .single();
           const newPoints = (userRow?.points || 0) + points;
           await supabase
             .from('users')
             .update({ points: newPoints, updated_at: new Date().toISOString() })
-            .eq('id', userId);
+            .eq('telegram_id', numericUserId);
         }
         updateTimeouts.delete(userId);
       } catch (error) {
@@ -228,14 +205,13 @@ export const updateUserPoints = async (
   }
 };
 
-// =============================
-//  تحديث الوقت المستغرق (مفلتر)
-// =============================
 export const updateUserTimeSpent = async (
   userId: string,
   timeSpent: number
 ): Promise<void> => {
   try {
+    const numericUserId = parseInt(userId);
+    
     if (updateTimeouts.has(userId)) {
       clearTimeout(updateTimeouts.get(userId)!);
     }
@@ -245,7 +221,7 @@ export const updateUserTimeSpent = async (
         await supabase
           .from('users')
           .update({ time_spent: timeSpent, updated_at: new Date().toISOString() })
-          .eq('id', userId);
+          .eq('telegram_id', numericUserId);
         updateTimeouts.delete(userId);
       } catch (error) {
         console.error('Error updating time spent:', error);
@@ -259,20 +235,17 @@ export const updateUserTimeSpent = async (
   }
 };
 
-// =============================
-//  إدارة الجلسات والتحديات اليومية
-// =============================
 export const initializeSessionTracking = async (userId: string): Promise<void> => {
   try {
-    // Get user's groups
+    const numericUserId = parseInt(userId);
+    
     const { data: userGroups } = await supabase
       .from('group_members')
       .select('group_id')
-      .eq('user_id', userId);
+      .eq('user_id', numericUserId);
 
     const groupIds = userGroups?.map((g) => g.group_id) || [];
 
-    // Initialize session data
     activeSessions.set(userId, {
       userId,
       sessionStart: Date.now(),
@@ -288,18 +261,18 @@ export const initializeSessionTracking = async (userId: string): Promise<void> =
 
 export const updateSessionGroups = async (userId: string): Promise<void> => {
   try {
+    const numericUserId = parseInt(userId);
+    
     const session = activeSessions.get(userId);
     if (!session) return;
 
-    // Get updated user groups
     const { data: userGroups } = await supabase
       .from('group_members')
       .select('group_id')
-      .eq('user_id', userId);
+      .eq('user_id', numericUserId);
 
     const groupIds = userGroups?.map((g) => g.group_id) || [];
 
-    // Update session data
     session.groups = groupIds;
     activeSessions.set(userId, session);
 
@@ -345,14 +318,14 @@ export const saveDailyTimeSpent = async (
   additionalTimeSpent: number
 ): Promise<boolean> => {
   try {
+    const numericUserId = parseInt(userId);
     const today = new Date().toISOString().split('T')[0];
 
-    // First, get the current daily time spent for today
     const { data: existingRecord } = await supabase
       .from('group_daily_challenges')
       .select('daily_time_spent')
       .eq('group_id', groupId)
-      .eq('user_id', userId)
+      .eq('user_id', numericUserId)
       .eq('challenge_date', today)
       .maybeSingle();
 
@@ -364,7 +337,7 @@ export const saveDailyTimeSpent = async (
       .upsert(
         {
           group_id: groupId,
-          user_id: userId,
+          user_id: numericUserId,
           challenge_date: today,
           daily_time_spent: newTotalTime,
           updated_at: new Date().toISOString(),
@@ -381,7 +354,7 @@ export const saveDailyTimeSpent = async (
     }
 
     console.log(
-      `Daily time updated: User ${userId}, Group ${groupId}, Added: ${additionalTimeSpent}s, Total: ${newTotalTime}s`
+      `Daily time updated: User ${numericUserId}, Group ${groupId}, Added: ${additionalTimeSpent}s, Total: ${newTotalTime}s`
     );
     return true;
   } catch (error) {
@@ -397,13 +370,14 @@ export const getUserDailyTimeSpent = async (
   date?: string
 ): Promise<number> => {
   try {
+    const numericUserId = parseInt(userId);
     const targetDate = date || new Date().toISOString().split('T')[0];
 
     const { data, error } = await supabase
       .from('group_daily_challenges')
       .select('daily_time_spent')
       .eq('group_id', groupId)
-      .eq('user_id', userId)
+      .eq('user_id', numericUserId)
       .eq('challenge_date', targetDate)
       .maybeSingle();
 
@@ -426,13 +400,12 @@ export const getDailyRanking = async (
   try {
     const targetDate = date || new Date().toISOString().split('T')[0];
 
-    // Get daily challenges for the group on the specific date
     const { data: dailyChallenges, error: challengesError } = await supabase
       .from('group_daily_challenges')
       .select('user_id, daily_time_spent')
       .eq('group_id', groupId)
       .eq('challenge_date', targetDate)
-      .gt('daily_time_spent', 0) // Only include users with positive time
+      .gt('daily_time_spent', 0)
       .order('daily_time_spent', { ascending: false });
 
     if (challengesError) {
@@ -444,21 +417,19 @@ export const getDailyRanking = async (
       return [];
     }
 
-    // Get user details for all users in the ranking
     const userIds = dailyChallenges.map((challenge) => challenge.user_id);
     const { data: users, error: usersError } = await supabase
       .from('users')
-      .select('id, name, photo_url')
-      .in('id', userIds);
+      .select('telegram_id, name, photo_url')
+      .in('telegram_id', userIds);
 
     if (usersError) {
       console.error('Error fetching users:', usersError);
       return [];
     }
 
-    // Combine challenge data with user data
     return dailyChallenges.map((challenge, index) => {
-      const user = users?.find((u) => u.id === challenge.user_id);
+      const user = users?.find((u) => u.telegram_id === challenge.user_id);
       return {
         user_id: challenge.user_id,
         user_name: user?.name || 'مستخدم غير معروف',
@@ -475,14 +446,13 @@ export const getDailyRanking = async (
 
 export const getTotalRanking = async (groupId: string): Promise<any[]> => {
   try {
-    // Get group members with their user data (عبر الربط التعريفي)
     const { data: memberData, error: memberError } = await supabase
       .from('group_members')
       .select(
         `
         user_id,
-        users:user_id (
-          id,
+        users!group_members_user_id_fkey (
+          telegram_id,
           name,
           photo_url,
           time_spent
@@ -500,7 +470,6 @@ export const getTotalRanking = async (groupId: string): Promise<any[]> => {
       return [];
     }
 
-    // Sort by total time spent and add ranking
     return (memberData || [])
       .map((item: any) => ({
         user_id: item.user_id,
@@ -529,13 +498,10 @@ export const getTodayDate = (): string => {
   return new Date().toISOString().split('T')[0];
 };
 
-// Clean up session tracking when user logs out or app closes
 export const cleanupSessionTracking = async (userId: string): Promise<void> => {
   try {
-    // Save any remaining session time
     await saveSessionTimeToDailyChallenge(userId);
 
-    // Remove from active sessions
     activeSessions.delete(userId);
 
     console.log(`Session tracking cleaned up for user ${userId}`);
@@ -544,7 +510,6 @@ export const cleanupSessionTracking = async (userId: string): Promise<void> => {
   }
 };
 
-// Function to handle session time every minute - called by the main app timer
 export const handleMinutelySessionUpdate = async (userId: string): Promise<void> => {
   try {
     await saveSessionTimeToDailyChallenge(userId);
@@ -553,14 +518,11 @@ export const handleMinutelySessionUpdate = async (userId: string): Promise<void>
   }
 };
 
-// Legacy function - keeping for backward compatibility
 export const saveUserSessionTime = async (
   userId: string,
   sessionTimeInSeconds: number
 ): Promise<void> => {
   try {
-    // This is now handled by the new session tracking system
-    // But we'll keep this for any existing calls
     const session = activeSessions.get(userId);
     if (session && session.groups.length > 0) {
       for (const groupId of session.groups) {
@@ -574,7 +536,6 @@ export const saveUserSessionTime = async (
 
 export const getTasks = async (): Promise<Task[]> => {
   try {
-    // Check cache first
     if (tasksCache && Date.now() - tasksCache.timestamp < CACHE_DURATION) {
       console.log('Returning cached tasks');
       return tasksCache.data;
@@ -595,10 +556,9 @@ export const getTasks = async (): Promise<Task[]> => {
       points: task.points,
       type: task.type as 'subscription' | 'daily' | 'link' | 'level' | 'tdl',
       url: task.url || undefined,
-      completed: false, // Will be checked separately
+      completed: false,
     }));
 
-    // Update cache
     tasksCache = {
       data: tasks,
       timestamp: Date.now(),
@@ -607,19 +567,19 @@ export const getTasks = async (): Promise<Task[]> => {
     return tasks;
   } catch (error) {
     console.error('Error fetching tasks:', error);
-    // Return cached data if available, even if expired
     return tasksCache?.data || [];
   }
 };
 
 export const getUserCompletedTasks = async (userId: string): Promise<string[]> => {
   try {
+    const numericUserId = parseInt(userId);
     console.log('Fetching completed tasks for user:', userId);
 
     const { data, error } = await supabase
       .from('user_tasks')
       .select('task_id')
-      .eq('user_id', userId);
+      .eq('user_id', numericUserId);
 
     if (error) {
       console.error('Error fetching user completed tasks:', error);
@@ -639,13 +599,13 @@ export const completeTask = async (
   taskId: string
 ): Promise<boolean> => {
   try {
+    const numericUserId = parseInt(userId);
     console.log('Attempting to complete task:', { userId, taskId });
 
-    // أولاً التحقق من أن المهمة لم تنجز من قبل
     const { data: existingTask } = await supabase
       .from('user_tasks')
       .select('id')
-      .eq('user_id', userId)
+      .eq('user_id', numericUserId)
       .eq('task_id', taskId)
       .maybeSingle();
 
@@ -657,7 +617,7 @@ export const completeTask = async (
     const { data, error } = await supabase
       .from('user_tasks')
       .insert({
-        user_id: userId,
+        user_id: numericUserId,
         task_id: taskId,
       })
       .select();
@@ -700,7 +660,7 @@ export const getTopUsers = async (limit: number = 100): Promise<UserData[]> => {
     if (error) throw error;
 
     return data.map((user: any, index: number) => ({
-      id: user.id,
+      id: user.telegram_id,
       name: user.name,
       username: user.username || undefined,
       photo_url: user.photo_url || undefined,
@@ -714,25 +674,18 @@ export const getTopUsers = async (limit: number = 100): Promise<UserData[]> => {
   }
 };
 
-// Add the new subscription tasks with improved error handling
 export const addNewSubscriptionTasks = async (): Promise<void> => {
   try {
-    // The code for adding or updating the specific tasks has been removed.
-    // This function will now do nothing.
     console.log('addNewSubscriptionTasks has been modified to no longer add or update specific tasks.');
   } catch (error) {
     console.error('Error in addNewSubscriptionTasks:', error);
   }
 };
 
-// حساب النقاط الكلية بناءً على الوقت المقضي والمهام المكتملة
 export const calculateTotalPoints = (
   timeSpentInSeconds: number,
   taskPoints: number
 ): number => {
-  // نقاط الوقت: 1 نقطة كل 10 ثوان
   const timePoints = Math.floor(timeSpentInSeconds / 10);
-
-  // إجمالي النقاط = نقاط الوقت + نقاط المهام
   return timePoints + taskPoints;
 };

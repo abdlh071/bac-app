@@ -1,25 +1,26 @@
 import React from 'react';
-import { supabase } from '../integrations/supabase/client';
+import { signInWithGoogle } from '../utils/auth';
+import { useToast } from '../hooks/use-toast';
 
 export default function LoginPage() {
+  const { toast } = useToast();
+  
   const handleGoogleLogin = async () => {
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo: window.location.origin,
-        },
-      });
-      if (error) throw error;
+      await signInWithGoogle();
     } catch (err: any) {
       console.error("خطأ أثناء تسجيل الدخول:", err.message);
+      toast({
+        title: "خطأ في تسجيل الدخول",
+        description: "حدث خطأ أثناء تسجيل الدخول بحساب Google. يرجى المحاولة مرة أخرى.",
+        variant: "destructive"
+      });
     }
   };
 
   return (
     <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-br from-blue-50 to-purple-100" dir="rtl">
       <div className="bg-white p-8 rounded-3xl shadow-xl text-center w-80 border border-gray-100">
-        {/* شعار التطبيق */}
         <div className="mb-8">
           <h1 className="text-4xl font-extrabold text-blue-700 mb-2">Revisa</h1>
           <p className="text-gray-600">رفيقك للدراسة والنجاح</p>
@@ -46,7 +47,7 @@ export default function LoginPage() {
         </button>
         
         <p className="text-gray-500 text-sm mt-6">
-          سجل الدخول بحساب Google الخاص بك للوصول إلى جميع ميزات التطبيق
+          سجل الدخول بحساب Google للوصول إلى جميع ميزات التطبيق والمزامنة عبر الأجهزة
         </p>
       </div>
     </div>

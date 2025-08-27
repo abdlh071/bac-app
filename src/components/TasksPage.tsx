@@ -12,7 +12,7 @@ import {
   BookOpen,
   Star
 } from 'lucide-react';
-import { openTelegramLink } from '../utils/telegram';
+import { openTelegramLink } from '../utils/auth';
 import {
   getTasks,
   getUserCompletedTasks,

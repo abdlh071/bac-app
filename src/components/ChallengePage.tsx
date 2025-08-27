@@ -97,20 +97,32 @@ const ChallengePage: React.FC<ChallengePageProps> = ({ currentUser }) => {
   // دالة للتأكد من وجود المستخدم في قاعدة البيانات
   const ensureUserExists = async () => {
     if (!currentUser) return;
+    
+    // Check if user already exists
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('telegram_id')
+      .eq('telegram_id', currentUser.id)
+      .maybeSingle();
+    
+    if (existingUser) return; // User already exists
+    
+    // Create user if doesn't exist
     const { error } = await supabase
       .from('users')
-      .upsert({
+      .insert({
         telegram_id: currentUser.id,
         name: currentUser.name,
         username: currentUser.username,
         photo_url: currentUser.photo_url,
-      }, { onConflict: 'telegram_id' })
-      .select('id')
-      .single();
+      });
 
     if (error) {
-      console.error('Error upserting user:', error);
-      throw new Error("فشل في تسجيل المستخدم في قاعدة البيانات.");
+      console.error('Error creating user:', error);
+      // Don't throw error if user already exists
+      if (!error.message.includes('duplicate')) {
+        throw new Error("فشل في تسجيل المستخدم في قاعدة البيانات.");
+      }
     }
   };
 
